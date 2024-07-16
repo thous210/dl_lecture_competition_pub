@@ -34,7 +34,8 @@ def compute_epe_error(pred_flow: torch.Tensor, gt_flow: torch.Tensor):
     gt_flow: torch.Tensor, Shape: torch.Size([B, 2, 480, 640]) => 正解のオプティカルフローデータ
     '''
     epe = torch.mean(torch.mean(torch.norm(pred_flow - gt_flow, p=2, dim=1), dim=(1, 2)), dim=0)
-    return epe
+    # epe_mask = torch.mean(torch.mean(torch.norm(flow_mask - gt_flow_mask, p=1, dim=1), dim=(1, 2)), dim=0)
+    return epe #+ epe_mask
 
 def save_optical_flow_to_npy(flow: torch.Tensor, file_name: str):
     '''
@@ -47,7 +48,7 @@ def save_optical_flow_to_npy(flow: torch.Tensor, file_name: str):
 @hydra.main(version_base=None, config_path="configs", config_name="base")
 def main(args: DictConfig):
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("mps") # torch.device("cuda" if torch.cuda.is_available() else "cpu")
     '''
         ディレクトリ構造:
 
@@ -116,6 +117,11 @@ def main(args: DictConfig):
     #   optimizer
     # ------------------
     optimizer = torch.optim.Adam(model.parameters(), lr=args.train.initial_learning_rate, weight_decay=args.train.weight_decay)
+    
+    # Create the directory if it doesn't exist
+    if not os.path.exists('checkpoints'):
+        os.makedirs('checkpoints')
+    
     # ------------------
     #   Start training
     # ------------------
@@ -126,9 +132,16 @@ def main(args: DictConfig):
         for i, batch in enumerate(tqdm(train_data)):
             batch: Dict[str, Any]
             event_image = batch["event_volume"].to(device) # [B, 4, 480, 640]
-            ground_truth_flow = batch["flow_gt"].to(device) # [B, 2, 480, 640]
+            ground_truth_flow = batch["flow_gt"].to(torch.float32).to(device) # [B, 2, 480, 640]
+            # ground_truth_flow_mask = batch["flow_gt_valid_mask"].to(torch.float32).to(device)
+
             flow = model(event_image) # [B, 2, 480, 640]
+            print(flow.size())
+            # flow_mask = flow[:,2,:,:]
+            # flow = flow[:,:2,:,:]
+
             loss: torch.Tensor = compute_epe_error(flow, ground_truth_flow)
+            # loss: torch.Tensor = compute_epe_error(flow, ground_truth_flow, flow_mask, ground_truth_flow_mask)
             print(f"batch {i} loss: {loss.item()}")
             optimizer.zero_grad()
             loss.backward()
@@ -136,20 +149,22 @@ def main(args: DictConfig):
 
             total_loss += loss.item()
         print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_data)}')
+        current_time = time.strftime("%Y%m%d%H%M%S")
+        model_path = f"checkpoints/model_{current_time}.pth"
+        optimizer_path = f"checkpoints/optimizer_{current_time}.pth"
+        torch.save(model.state_dict(), model_path)
+        torch.save(optimizer.state_dict(), optimizer_path)
 
-    # Create the directory if it doesn't exist
-    if not os.path.exists('checkpoints'):
-        os.makedirs('checkpoints')
-    
-    current_time = time.strftime("%Y%m%d%H%M%S")
-    model_path = f"checkpoints/model_{current_time}.pth"
-    torch.save(model.state_dict(), model_path)
-    print(f"Model saved to {model_path}")
+    # current_time = time.strftime("%Y%m%d%H%M%S")
+    # model_path = f"checkpoints/model_{current_time}.pth"
+    # torch.save(model.state_dict(), model_path)
+    # print(f"Model saved to {model_path}")
 
     # ------------------
     #   Start predicting
     # ------------------
     model.load_state_dict(torch.load(model_path, map_location=device))
+    # model.load_state_dict(torch.load("checkpoints/model_20240716155638.pth", map_location=device))
     model.eval()
     flow: torch.Tensor = torch.tensor([]).to(device)
     with torch.no_grad():
@@ -158,6 +173,8 @@ def main(args: DictConfig):
             batch: Dict[str, Any]
             event_image = batch["event_volume"].to(device)
             batch_flow = model(event_image) # [1, 2, 480, 640]
+            # batch_flow = batch_flow[:,:2,:,:]
+            
             flow = torch.cat((flow, batch_flow), dim=0)  # [N, 2, 480, 640]
         print("test done")
     # ------------------

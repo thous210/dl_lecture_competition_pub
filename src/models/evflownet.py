@@ -29,6 +29,8 @@ class EVFlowNet(nn.Module):
         self.decoder4 = upsample_conv2d_and_predict_flow(in_channels=2*_BASE_CHANNELS+2,
                         out_channels=int(_BASE_CHANNELS/2), do_batch_norm=not self._args.no_batch_norm)
 
+        self.last_conv = general_conv2d(in_channels = 8, out_channels=2, do_batch_norm=not self._args.no_batch_norm, ksize=3, strides=1, padding=1)
+
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         # encoder
         skip_connections = {}
@@ -49,18 +51,25 @@ class EVFlowNet(nn.Module):
         inputs = torch.cat([inputs, skip_connections['skip3']], dim=1)
         inputs, flow = self.decoder1(inputs)
         flow_dict['flow0'] = flow.clone()
+        shape0 = flow.shape
 
         inputs = torch.cat([inputs, skip_connections['skip2']], dim=1)
         inputs, flow = self.decoder2(inputs)
         flow_dict['flow1'] = flow.clone()
+        shape1 = flow.shape
 
         inputs = torch.cat([inputs, skip_connections['skip1']], dim=1)
         inputs, flow = self.decoder3(inputs)
         flow_dict['flow2'] = flow.clone()
+        shape2 = flow.shape
 
         inputs = torch.cat([inputs, skip_connections['skip0']], dim=1)
         inputs, flow = self.decoder4(inputs)
         flow_dict['flow3'] = flow.clone()
+
+        flow = self.last_conv(torch.cat([flow, nn.functional.interpolate(flow_dict['flow2'],size=[shape2[2]*2,shape2[3]*2],mode='nearest'),\
+                                               nn.functional.interpolate(flow_dict['flow1'],size=[shape1[2]*4,shape1[3]*4],mode='nearest'),\
+                                               nn.functional.interpolate(flow_dict['flow0'],size=[shape0[2]*8,shape0[3]*8],mode='nearest')], dim=1))
 
         return flow
         
